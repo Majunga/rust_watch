@@ -17,23 +17,26 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let mut cache = glob_and_hash(args.pattern.clone());
+    let mut cache = glob_and_cache(args.pattern.clone(), &mut |_, _| {});
 
     println!("Watching for changes in: {}", args.pattern.clone());
 
     loop {
-        let new_cache = glob_and_hash(args.pattern.clone());
         let mut has_changes = false;
 
-        if new_cache != cache {
-            command_handler(&args.command);
-            has_changes = true;
-        }
+        let mut check_for_change = |i: usize, hash: String| {
+            if hash != cache[i] {
+                has_changes = true;
+            }
+        };
+
+        let new_cache = glob_and_cache(args.pattern.clone(), &mut check_for_change);
 
         if has_changes {
+            command_handler(&args.command);
             cache = new_cache;
         }
-
+        
         sleep(Duration::from_secs(1));
     }
 }
@@ -57,20 +60,22 @@ fn command_handler(command_to_execute: &str) {
     }
 }
 
-fn glob_and_hash(pattern: String) -> String {
+fn glob_and_cache(pattern: String, change_check: &mut dyn FnMut (usize, String)) -> Vec<String> {
     let mut cache = Vec::<String>::new();
 
-    for entry in glob(&pattern).expect("Failed to readpattern") {
+    for (i, entry) in glob(&pattern).expect("Failed to readpattern").enumerate() {
         match entry {
             Ok(path) => {
-                cache.push(sha256::try_digest(path).expect("File to be hashed"));
+                let hash = sha256::try_digest(path).expect("File to be hashed");
+                change_check(i, hash.clone());
+
+                cache.push(hash);
             }
             Err(e) => println!("{:?}", e),
         }
     }
 
-    // not sure if this is better than a single string of many hashes
-    sha256::digest(cache.concat())
+    cache
 }
 
 #[cfg(test)]
@@ -79,12 +84,12 @@ mod tests {
 
     #[test]
     fn test_glob_and_cache() {
-        let expected_lock_hash = "75b6ee4f82a89fe973adbbbf91941bc60c79305dad1cbbfd97ba42b23e9febac";
-        let expected_toml_hash = "1c9b383260ce264fcfc24160fc5c49230e49b1fe1f342b0b7fd2e5491442c215";
-        let expected = sha256::digest(format!("{expected_lock_hash}{expected_toml_hash}"));
+        let expected_lock_hash = "75b6ee4f82a89fe973adbbbf91941bc60c79305dad1cbbfd97ba42b23e9febac".to_string();
+        let expected_toml_hash = "1c9b383260ce264fcfc24160fc5c49230e49b1fe1f342b0b7fd2e5491442c215".to_string();
+        let expected = vec![expected_lock_hash, expected_toml_hash];
 
         let pattern = "./Cargo.*".to_string();
-        let actual = glob_and_hash(pattern);
+        let actual = glob_and_cache(pattern, &mut |_, _| {});
 
         assert_eq!(expected, actual);
     }
